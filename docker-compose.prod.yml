@@ -1,0 +1,27 @@
+services:
+  bot:
+    image: ghcr.io/sanzharal/filedropbot:latest
+    container_name: filedropbot
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    env_file:
+      - .env
+    environment:
+      - DATA_DIR=/app/data
+      - HOST_DATA_DIR=/root/filedropbot/data
+    volumes:
+      - ./data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 100
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
