@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import (
     Application,
     ContextTypes,
@@ -214,9 +214,18 @@ async def cleanup(context: ContextTypes.DEFAULT_TYPE) -> None:
         log.info("cleanup removed %d expired file(s)", removed)
 
 
+async def _post_init(app: Application) -> None:
+    # Enforce a clean command menu, replacing any commands left by a prior bot
+    # that used this token.
+    await app.bot.set_my_commands([
+        BotCommand("start", "Usage help"),
+        BotCommand("list", "Show recent drops"),
+    ])
+
+
 def main() -> None:
     DROPS_DIR.mkdir(parents=True, exist_ok=True)
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(_post_init).build()
 
     only_me = filters.User(user_id=ALLOWED_USER_ID)
     media = (
