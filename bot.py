@@ -57,8 +57,13 @@ SENT_DIR = DATA_DIR / "sent"       # archive of already-delivered outbox files
 # server. Sending out is allowed up to 50 MB.
 TELEGRAM_DOWNLOAD_LIMIT = 20 * 1024 * 1024
 TELEGRAM_UPLOAD_LIMIT = 50 * 1024 * 1024
+TELEGRAM_CAPTION_LIMIT = 1024
 # Suffixes that signal a file is still being written — skip until renamed.
 _PARTIAL_SUFFIXES = (".tmp", ".part", ".partial", ".writing", ".crdownload")
+# Optional sidecar: drop "<filename>.caption.txt" next to a file to set the
+# Telegram message caption while keeping the document's filename untouched.
+# Without a sidecar the caption defaults to the filename (legacy behaviour).
+_CAPTION_SUFFIX = ".caption.txt"
 
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -196,6 +201,9 @@ def _outbox_ready(path: Path, now: float) -> bool:
         return False
     if path.suffix.lower() in _PARTIAL_SUFFIXES:
         return False
+    # Caption sidecars are metadata for another file, never sent on their own.
+    if path.name.endswith(_CAPTION_SUFFIX):
+        return False
     try:
         return (now - path.stat().st_mtime) >= OUTBOX_SETTLE_SEC
     except OSError:
@@ -225,12 +233,13 @@ async def _drain_outbox(context: ContextTypes.DEFAULT_TYPE) -> None:
                 continue
             # Send as a document so bytes and filename are preserved exactly
             # (no recompression — important for screenshots and charts).
+            caption = _read_caption(path)
             with path.open("rb") as fh:
                 await context.bot.send_document(
                     chat_id=ALLOWED_USER_ID,
                     document=fh,
                     filename=path.name,
-                    caption=path.name,
+                    caption=caption,
                 )
             _archive_outbox(path)
             log.info("outbox sent %s", path.name)
@@ -240,8 +249,30 @@ async def _drain_outbox(context: ContextTypes.DEFAULT_TYPE) -> None:
             inflight.discard(path)
 
 
+def _read_caption(path: Path) -> str:
+    """Caption from an optional "<filename>.caption.txt" sidecar, else the
+    filename. Lets the document keep a clean name (e.g. widget.zip) while the
+    message still discloses context. Trimmed to Telegram's caption limit."""
+    sidecar = path.with_name(path.name + _CAPTION_SUFFIX)
+    if sidecar.is_file():
+        try:
+            text = sidecar.read_text(encoding="utf-8").strip()
+            if text:
+                return text[:TELEGRAM_CAPTION_LIMIT]
+        except OSError as e:  # noqa: BLE001 — fall back to the filename
+            log.warning("caption read failed for %s: %s", sidecar, e)
+    return path.name
+
+
 def _archive_outbox(path: Path) -> None:
     """Move a delivered file out of the outbox into the dated sent/ archive."""
+    # Drop any caption sidecar once its file has been delivered.
+    sidecar = path.with_name(path.name + _CAPTION_SUFFIX)
+    if sidecar.is_file():
+        try:
+            sidecar.unlink()
+        except OSError as e:  # noqa: BLE001
+            log.warning("caption cleanup failed for %s: %s", sidecar, e)
     try:
         rel = path.relative_to(OUTBOX_DIR)
     except ValueError:

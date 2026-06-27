@@ -30,6 +30,15 @@ Notes:
   `.part`, and dotfiles until they're renamed, and otherwise waits ~2s of
   inactivity before sending so it never ships a half-written file.
 - Filenames are preserved exactly and sent as documents (no recompression).
+- **Message caption:** by default the caption equals the filename. To keep a
+  clean filename *and* add context, drop a sidecar `<filename>.caption.txt`
+  next to the file — its text (≤1024 chars) becomes the caption, and the
+  sidecar is removed after sending. Example:
+
+  ```bash
+  cp widget.zip /root/filedropbot/data/outbox/
+  printf 'ProverkaCheka widget v3.0.0' > /root/filedropbot/data/outbox/widget.zip.caption.txt
+  ```
 
 ## Wiring this into your agent's global config
 
