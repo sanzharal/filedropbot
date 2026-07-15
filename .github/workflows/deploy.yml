@@ -60,7 +60,9 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
+            set -euo pipefail
             cd /root/filedropbot
+            git switch main
             git pull --ff-only origin main
             docker compose -f docker-compose.prod.yml pull
             docker compose -f docker-compose.prod.yml up -d
