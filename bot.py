@@ -10,6 +10,7 @@ Locked to a single Telegram user. Two directions:
 
 Drops older than RETENTION_DAYS are deleted automatically.
 """
+import asyncio
 import logging
 import os
 import re
@@ -19,6 +20,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from telegram import Update, BotCommand
+from telegram.error import TimedOut, NetworkError
 from telegram.ext import (
     Application,
     ContextTypes,
@@ -26,6 +28,7 @@ from telegram.ext import (
     CommandHandler,
     filters,
 )
+from telegram.request import HTTPXRequest
 
 load_dotenv()
 
@@ -121,9 +124,25 @@ async def _save(context: ContextTypes.DEFAULT_TYPE, file_id: str, name: str, siz
     dest_dir = DROPS_DIR / day
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{_stamp()}_{_safe_name(name)}"
-    tg_file = await context.bot.get_file(file_id)
-    await tg_file.download_to_drive(custom_path=str(dest))
-    return _host_path(dest)
+    # Telegram CDN is occasionally slow; default 5s read_timeout used to fail
+    # mid-download and leave the user with no reply. Retry a few times.
+    last_err: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            tg_file = await context.bot.get_file(file_id)
+            await tg_file.download_to_drive(custom_path=str(dest))
+            return _host_path(dest)
+        except (TimedOut, NetworkError) as e:
+            last_err = e
+            log.warning("download attempt %d/3 failed for %s: %s", attempt, name, e)
+            if dest.exists():
+                try:
+                    dest.unlink()
+                except OSError:
+                    pass
+            if attempt < 3:
+                await asyncio.sleep(1.5 * attempt)
+    raise last_err  # type: ignore[misc]
 
 
 def _format_reply(paths: list[str], oversized: int) -> str:
@@ -163,16 +182,23 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    paths, oversized = [], 0
-    saved = await _save(context, *info)
-    if saved:
-        paths.append(saved)
-    else:
-        oversized += 1
-    await message.reply_text(
-        _format_reply(paths, oversized), parse_mode="Markdown",
-        reply_to_message_id=message.message_id,
-    )
+    try:
+        paths, oversized = [], 0
+        saved = await _save(context, *info)
+        if saved:
+            paths.append(saved)
+        else:
+            oversized += 1
+        await message.reply_text(
+            _format_reply(paths, oversized), parse_mode="Markdown",
+            reply_to_message_id=message.message_id,
+        )
+    except (TimedOut, NetworkError) as e:
+        log.exception("media save failed after retries: %s", e)
+        await message.reply_text(
+            "⚠️ Telegram timed out while downloading your file. Please send it again.",
+            reply_to_message_id=message.message_id,
+        )
 
 
 async def _flush_album(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -180,18 +206,28 @@ async def _flush_album(context: ContextTypes.DEFAULT_TYPE) -> None:
     group_id = data["group_id"]
     items = context.application.bot_data.get("albums", {}).pop(group_id, [])
     paths, oversized = [], 0
+    failed = 0
     for info in items:
-        saved = await _save(context, *info)
-        if saved:
-            paths.append(saved)
-        else:
-            oversized += 1
-    await context.bot.send_message(
-        chat_id=data["chat_id"],
-        text=_format_reply(paths, oversized),
-        parse_mode="Markdown",
-        reply_to_message_id=data["reply_to"],
-    )
+        try:
+            saved = await _save(context, *info)
+            if saved:
+                paths.append(saved)
+            else:
+                oversized += 1
+        except (TimedOut, NetworkError) as e:
+            failed += 1
+            log.warning("album item failed: %s", e)
+    text = _format_reply(paths, oversized)
+    if failed:
+        note = f"\n⚠️ {failed} file(s) failed (Telegram timeout). Please resend them."
+        text = (text + note) if text else note.strip()
+    if text:
+        await context.bot.send_message(
+            chat_id=data["chat_id"],
+            text=text,
+            parse_mode="Markdown",
+            reply_to_message_id=data["reply_to"],
+        )
 
 
 def _outbox_ready(path: Path, now: float) -> bool:
@@ -347,11 +383,48 @@ async def _post_init(app: Application) -> None:
     ])
 
 
+async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Last-resort handler so silent exceptions don't leave the user hanging."""
+    log.error("unhandled error: %s", context.error, exc_info=context.error)
+    if not isinstance(update, Update) or not update.effective_message:
+        return
+    if update.effective_user and update.effective_user.id != ALLOWED_USER_ID:
+        return
+    try:
+        await update.effective_message.reply_text(
+            "⚠️ Something went wrong saving that file. Please try again.",
+        )
+    except Exception as e:  # noqa: BLE001 — never crash the error handler
+        log.warning("error reply failed: %s", e)
+
+
 def main() -> None:
     DROPS_DIR.mkdir(parents=True, exist_ok=True)
     OUTBOX_DIR.mkdir(parents=True, exist_ok=True)
     SENT_DIR.mkdir(parents=True, exist_ok=True)
-    app = Application.builder().token(BOT_TOKEN).post_init(_post_init).build()
+    # Defaults are connect/read/write = 5s — too tight for getFile + photo CDN.
+    request = HTTPXRequest(
+        connection_pool_size=8,
+        connect_timeout=20.0,
+        read_timeout=60.0,
+        write_timeout=60.0,
+        pool_timeout=10.0,
+        media_write_timeout=120.0,
+    )
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .request(request)
+        .get_updates_request(HTTPXRequest(
+            connection_pool_size=2,
+            connect_timeout=20.0,
+            read_timeout=60.0,
+            write_timeout=30.0,
+            pool_timeout=10.0,
+        ))
+        .post_init(_post_init)
+        .build()
+    )
 
     only_me = filters.User(user_id=ALLOWED_USER_ID)
     media = (
@@ -361,6 +434,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", cmd_start, filters=only_me))
     app.add_handler(CommandHandler("list", cmd_list, filters=only_me))
     app.add_handler(MessageHandler(only_me & media, handle_media))
+    app.add_error_handler(_on_error)
 
     app.job_queue.run_repeating(cleanup, interval=6 * 3600, first=10)
     app.job_queue.run_repeating(_drain_outbox, interval=OUTBOX_POLL_SEC, first=5)
