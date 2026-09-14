@@ -48,7 +48,9 @@ jobs:
       - name: Copy compose to VM
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{ secrets.VM_HOST }}
+          host: 100.107.181.25
+          port: 2222
+          fingerprint: SHA256:3cc+gTc/lWtByfY+kI9ySq1Cuda5Sepp+1dytM+zc/g
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           source: "docker-compose.prod.yml"
@@ -56,7 +58,9 @@ jobs:
       - name: Pull image and restart container on VM
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.VM_HOST }}
+          host: 100.107.181.25
+          port: 2222
+          fingerprint: SHA256:3cc+gTc/lWtByfY+kI9ySq1Cuda5Sepp+1dytM+zc/g
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
