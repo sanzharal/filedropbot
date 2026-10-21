@@ -23,6 +23,10 @@ class OfflineTelegram(BaseRequest):
         self.calls = []
         self.fail_upload = False
 
+    @property
+    def read_timeout(self):
+        return 5
+
     async def initialize(self):
         pass
 

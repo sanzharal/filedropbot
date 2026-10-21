@@ -56,3 +56,10 @@ jobs:
         run: |
           docker run --rm --network none --entrypoint python ca-trust:check -m pip check
           docker run --rm --network none -e PYTHONPATH=/checks -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/checks:ro" -w /tmp --entrypoint python ca-trust:check /checks/test_dependency_contract.py
+      - name: Verify production PTB builder and actual dispatcher offline
+        run: |
+          docker run --rm --network none --user 0 -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/source:ro" --entrypoint sh ca-trust:check -ec '
+            cp -a /source /tmp/checks
+            cd /tmp/checks
+            python .github/scripts/check_ptb_dispatch.py
+          '
