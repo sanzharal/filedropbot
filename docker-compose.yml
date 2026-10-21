@@ -3,6 +3,7 @@ services:
     build: .
     container_name: filedropbot
     restart: unless-stopped
+    user: "1000:1001"
     logging:
       driver: json-file
       options:
@@ -12,9 +13,11 @@ services:
       - .env
     environment:
       - DATA_DIR=/app/data
-      - HOST_DATA_DIR=/root/filedropbot/data
+      - HOST_DATA_DIR=/home/ubuntu/projects/filedropbot/data
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     volumes:
       - ./data:/app/data
+      - /etc/ssl/certs:/etc/ssl/certs:ro
     read_only: true
     tmpfs:
       - /tmp
