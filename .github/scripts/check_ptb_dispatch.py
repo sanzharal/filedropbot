@@ -1,7 +1,7 @@
 """Real production builder/handlers with disposable SQLite and fake Telegram HTTP.
 
-Run from repository root. No post_init hooks, polling, webhook registration,
-background workers or payment services are started.
+Run from repository root. The actual post_init runs with fake external I/O; polling, webhook registration,
+background payment/reminder ticks are never started.
 """
 import asyncio
 import importlib
@@ -69,6 +69,66 @@ class OfflineTelegram(BaseRequest):
         return 200, json.dumps({'ok': True, 'result': result}).encode()
 
 
+async def checked_startup(callback):
+    """Keep real Task semantics and retain finished startup tasks for inspection."""
+    loop = asyncio.get_running_loop()
+    previous_factory = loop.get_task_factory()
+    created = []
+    errors = []
+
+    def tracking_factory(task_loop, coro, **kwargs):
+        task = (previous_factory(task_loop, coro, **kwargs) if previous_factory
+                else asyncio.Task(coro, loop=task_loop, **kwargs))
+        created.append(task)
+        return task
+
+    loop.set_task_factory(tracking_factory)
+    try:
+        await callback()
+        await asyncio.sleep(0)  # Let actual startup tasks enter once.
+    finally:
+        try:
+            inspected = set()
+            while pending_inspection := [task for task in created if task not in inspected]:
+                for task in pending_inspection:
+                    if not task.done():
+                        task.cancel()  # Dormant timer/poller, no payment tick.
+                outcomes = await asyncio.gather(*pending_inspection, return_exceptions=True)
+                errors.extend(outcome for outcome in outcomes
+                              if isinstance(outcome, BaseException)
+                              and not isinstance(outcome, asyncio.CancelledError))
+                inspected.update(pending_inspection)
+        finally:
+            loop.set_task_factory(previous_factory)
+    assert not errors, 'Startup background task failed: ' + '; '.join(map(repr, errors))
+    return created
+
+
+async def verify_startup_failure_detection():
+    """Completed crashes and crashes during cancellation must fail the gate."""
+    for during_cancel in (False, True):
+        marker = 'startup-failure-control-' + str(during_cancel)
+
+        async def external_failure():
+            if during_cancel:
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    raise RuntimeError(marker)
+            raise RuntimeError(marker)
+
+        async def startup_callback():
+            asyncio.create_task(external_failure())
+            await asyncio.sleep(0)  # First control finishes before callback returns.
+
+        try:
+            await checked_startup(startup_callback)
+        except AssertionError as exc:
+            assert marker in str(exc), exc
+        else:
+            raise AssertionError('Startup background failure was not detected: ' + marker)
+
+
 def update(bot, *, user=42, document=False):
     message = {'message_id': 1, 'date': 1700000000, 'chat': {'id': user, 'type': 'private'},
                'from': {'id': user, 'is_bot': False, 'first_name': 'Offline'}}
@@ -125,27 +185,16 @@ async def run():
         # Execute the real startup callback: do not replace DB restore, imports,
         # scheduler registration or task creation. Only the dashboard socket
         # bind is an external fake; Telegram HTTP already uses OfflineTelegram.
-        before_tasks = set(asyncio.all_tasks())
-        if hasattr(module, 'dashboard'):
-            dashboard_io = AsyncMock()
-            with patch.object(module.dashboard, 'start_dashboard', dashboard_io):
+        async def execute_post_init():
+            if hasattr(module, 'dashboard'):
+                dashboard_io = AsyncMock()
+                with patch.object(module.dashboard, 'start_dashboard', dashboard_io):
+                    await app.post_init(app)
+                dashboard_io.assert_awaited_once()
+            else:
                 await app.post_init(app)
-            dashboard_io.assert_awaited_once()
-        else:
-            await app.post_init(app)
-        # Let actual startup tasks enter once, then stop dormant pollers without
-        # running scheduled payment/reminder work or waiting for minute timers.
-        await asyncio.sleep(0)
-        startup_tasks = set(asyncio.all_tasks()) - before_tasks
-        task_errors = []
-        for task in startup_tasks:
-            if task.done() and not task.cancelled() and task.exception():
-                task_errors.append(repr(task.exception()))
-            if not task.done():
-                task.cancel()
-        if startup_tasks:
-            await asyncio.gather(*startup_tasks, return_exceptions=True)
-        assert not task_errors, task_errors
+        await verify_startup_failure_detection()
+        startup_tasks = await checked_startup(execute_post_init)
         jobs = {job.name: job for job in app.job_queue.jobs()} if app.job_queue else {}
         if REPO in {'AishaAsyabot', 'contrastbot', 'karinaugcbot', 'kunuspekovabotasya', 'malikaxoxobot'}:
             expected = {'daily_backup', 'daily_admin_report'}
@@ -198,7 +247,8 @@ async def run():
         assert not errors, errors
     print(json.dumps({'repo': REPO, 'production_builder': True, 'real_dispatch': True,
                       'job_queue': REPO != 'textformating2htmlbot', 'post_init': True,
-                      'scheduled_jobs': sorted(jobs), 'handler_errors': errors,
+                      'scheduled_jobs': sorted(jobs), 'startup_tasks_checked': len(startup_tasks),
+                      'startup_failure_controls': 2, 'handler_errors': errors,
                       'telegram_calls': [endpoint for endpoint, _ in transport.calls]}))
 
 
