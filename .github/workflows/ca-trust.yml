@@ -1,0 +1,54 @@
+name: CA trust
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ca-trust-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ca-trust:check
+          cache-from: type=gha,scope=ca-trust
+          cache-to: type=gha,mode=max,scope=ca-trust
+      - name: Fetch pinned incident certificate fixtures
+        run: |
+          curl --fail --silent --show-error --location https://emudhra.we-have-a-problem.com/chains.zip -o chains.zip
+          echo "8a2edc81b6c51e3ad27d45ca1e441ec84c961e2dee0fc547f2a02c0f74315f95  chains.zip" | sha256sum --check --strict
+          unzip -q chains.zip
+      - name: Verify system and Python CA stores
+        run: |
+          docker run --rm -i --entrypoint python -v "$PWD/chains:/chains:ro" ca-trust:check - <<'PY'
+          import importlib.metadata as m
+          import pathlib, subprocess, ssl, socket
+          import certifi
+          assert m.version("certifi") == "2026.10.19", m.version("certifi")
+          assert m.version("pip") == "26.2.2", m.version("pip")
+          for bundle in [None, certifi.where()]:
+              for chain in sorted(pathlib.Path("/chains").glob("*.pem")):
+                  cmd = ["openssl", "verify", "-no-CApath", "-no-CAstore"]
+                  if bundle:
+                      cmd += ["-CAfile", bundle]
+                  cmd += ["-untrusted", str(chain), str(chain)]
+                  result = subprocess.run(cmd, capture_output=True, text=True)
+                  output = result.stdout + result.stderr
+                  assert result.returncode != 0, f"Compromised chain accepted: {bundle}: {chain.name}"
+                  assert "error 20 at" in output or "error 21 at" in output, output
+              context = ssl.create_default_context(cafile=bundle)
+              with socket.create_connection(("api.telegram.org", 443), timeout=15) as sock:
+                  with context.wrap_socket(sock, server_hostname="api.telegram.org"):
+                      pass
+          print("Both trust stores reject all 12 compromised chains; valid TLS works.")
+          PY
