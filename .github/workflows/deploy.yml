@@ -2,7 +2,11 @@ name: Build and publish verified bot
 on:
   push:
     branches: [main]
-    paths-ignore: ['**.md', '.gitignore']
+    paths-ignore:
+      - "**.md"
+      - ".gitignore"
+      - ".github/dependabot.yml"
+      - ".github/dependabot.yaml"
   workflow_dispatch:
   schedule:
     - cron: '41 4 * * *'
