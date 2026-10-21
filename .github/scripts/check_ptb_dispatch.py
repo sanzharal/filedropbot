@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 REPO = 'filedropbot'
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +27,7 @@ os.environ.update({
     'ROBO_LOGIN': '', 'ROBO_PASS1': '', 'ROBO_PASS2': '', 'PRODAMUS_SECRET': '',
     'CHANNEL_ID': '0', 'CHANNEL_ID_15K': '0', 'VIP_CHAT_ID': '0',
     'CLUB_CHAT_ID': '0', 'CLUB_VIP_CHAT_ID': '0', 'GROUP_CHAT_ID': '0',
+    'HOMEWORK_GROUP_ID': '0', 'CRYPTOPAY_API_TOKEN': '', 'CRYPTO_PAY_API_TOKEN': '',
 })
 
 from telegram import Update
@@ -58,6 +59,8 @@ class OfflineTelegram(BaseRequest):
             result = {'id': 123456, 'is_bot': True, 'first_name': 'Offline', 'username': 'offline_bot'}
         elif endpoint == 'getFile':
             result = {'file_id': 'file', 'file_unique_id': 'unique', 'file_path': 'document.txt'}
+        elif endpoint in {'setChatMenuButton', 'setMyCommands'}:
+            result = True
         elif endpoint == 'sendMessage':
             result = {'message_id': len(self.calls), 'date': 1700000000,
                       'chat': {'id': int(params['chat_id']), 'type': 'private'}, 'text': params['text']}
@@ -119,6 +122,50 @@ async def run():
             kwargs = {'funnel_version': 5} if 'funnel_version' in inspect.signature(upsert).parameters else {}
             upsert(42, **kwargs)
     async with app:
+        # Execute the real startup callback: do not replace DB restore, imports,
+        # scheduler registration or task creation. Only the dashboard socket
+        # bind is an external fake; Telegram HTTP already uses OfflineTelegram.
+        before_tasks = set(asyncio.all_tasks())
+        if hasattr(module, 'dashboard'):
+            dashboard_io = AsyncMock()
+            with patch.object(module.dashboard, 'start_dashboard', dashboard_io):
+                await app.post_init(app)
+            dashboard_io.assert_awaited_once()
+        else:
+            await app.post_init(app)
+        # Let actual startup tasks enter once, then stop dormant pollers without
+        # running scheduled payment/reminder work or waiting for minute timers.
+        await asyncio.sleep(0)
+        startup_tasks = set(asyncio.all_tasks()) - before_tasks
+        task_errors = []
+        for task in startup_tasks:
+            if task.done() and not task.cancelled() and task.exception():
+                task_errors.append(repr(task.exception()))
+            if not task.done():
+                task.cancel()
+        if startup_tasks:
+            await asyncio.gather(*startup_tasks, return_exceptions=True)
+        assert not task_errors, task_errors
+        jobs = {job.name: job for job in app.job_queue.jobs()} if app.job_queue else {}
+        if REPO in {'AishaAsyabot', 'contrastbot', 'karinaugcbot', 'kunuspekovabotasya', 'malikaxoxobot'}:
+            expected = {'daily_backup', 'daily_admin_report'}
+            if REPO in {'kunuspekovabotasya', 'malikaxoxobot'}:
+                expected.add('access_expiry_scan')
+            if REPO == 'karinaugcbot':
+                expected |= {'topup_reminder', 'topup_deadline', 'access_expiry_sweep'}
+            if REPO == 'contrastbot':
+                expected |= {'topup_reminder', 'topup_deadline', 'daily_hw_report'}
+            assert expected <= jobs.keys(), (expected - jobs.keys())
+            from datetime import datetime, timezone
+            from zoneinfo import ZoneInfo
+            reference = datetime(2026, 10, 21, tzinfo=timezone.utc)
+            for name, hour in [('daily_backup', 3), ('daily_admin_report', 20)]:
+                scheduled = jobs[name].job.trigger.get_next_fire_time(None, reference)
+                local = scheduled.astimezone(ZoneInfo('Asia/Almaty'))
+                assert (local.hour, local.minute) == (hour, 0), (name, local)
+        if REPO == 'filedropbot':
+            assert {'cleanup', '_drain_outbox'} <= jobs.keys(), jobs.keys()
+            assert any(endpoint == 'setMyCommands' for endpoint, _ in transport.calls)
         if REPO != 'textformating2htmlbot':
             assert app.job_queue is not None, 'Production reminder/file queues unavailable'
             async def noop(context):
@@ -150,7 +197,8 @@ async def run():
                 assert not any(endpoint == 'getFile' for endpoint, _ in transport.calls), 'No-intent/non-PDF receipt must not download'
         assert not errors, errors
     print(json.dumps({'repo': REPO, 'production_builder': True, 'real_dispatch': True,
-                      'job_queue': REPO != 'textformating2htmlbot', 'handler_errors': errors,
+                      'job_queue': REPO != 'textformating2htmlbot', 'post_init': True,
+                      'scheduled_jobs': sorted(jobs), 'handler_errors': errors,
                       'telegram_calls': [endpoint for endpoint, _ in transport.calls]}))
 
 
