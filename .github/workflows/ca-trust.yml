@@ -13,8 +13,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
       - name: Build production image
         uses: docker/build-push-action@v6
         with:
@@ -52,3 +52,7 @@ jobs:
                       pass
           print("Both trust stores reject all 12 compromised chains; valid TLS works.")
           PY
+      - name: Verify dependency and Telegram dispatch contracts offline
+        run: |
+          docker run --rm --network none --entrypoint python ca-trust:check -m pip check
+          docker run --rm --network none -e PYTHONPATH=/checks -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/checks:ro" -w /tmp --entrypoint python ca-trust:check /checks/test_dependency_contract.py
