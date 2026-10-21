@@ -5,10 +5,9 @@ services:
     restart: unless-stopped
     user: "${FILEDROP_UID:-1000}:${FILEDROP_GID:-1001}"
     logging:
-      driver: json-file
+      driver: journald
       options:
-        max-size: "10m"
-        max-file: "5"
+        tag: "{{.Name}}"
     env_file:
       - .env
     environment:
