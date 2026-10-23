@@ -25,8 +25,8 @@ jobs:
           cache-to: type=gha,mode=max,scope=ca-trust
       - name: Fetch pinned incident certificate fixtures
         run: |
-          curl --fail --silent --show-error --location https://emudhra.we-have-a-problem.com/chains.zip -o chains.zip
-          echo "8a2edc81b6c51e3ad27d45ca1e441ec84c961e2dee0fc547f2a02c0f74315f95  chains.zip" | sha256sum --check --strict
+          cp .github/fixtures/emudhra-chains.zip chains.zip
+          echo "7b949956955fc501a30f4d98d2f513d34c0bbbe92e29a968194c96e097ce2345  chains.zip" | sha256sum --check --strict
           unzip -q chains.zip
       - name: Verify system and Python CA stores
         run: |
@@ -51,7 +51,7 @@ jobs:
               with socket.create_connection(("api.telegram.org", 443), timeout=15) as sock:
                   with context.wrap_socket(sock, server_hostname="api.telegram.org"):
                       pass
-          print("Both trust stores reject all 12 compromised chains; valid TLS works.")
+          print("Both trust stores reject all 14 compromised chains; valid TLS works.")
           PY
       - name: Verify dependency and Telegram dispatch contracts offline
         run: |
