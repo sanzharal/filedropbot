@@ -1,21 +1,9 @@
-FROM python:3.11-slim
+FROM python:3.11-alpine3.24
 
 # Reject eMudhra compromised CA chains in both build tools and the runtime.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && . /etc/os-release \
-    && case "$VERSION_CODENAME" in \
-         bookworm) ca_min='20250419~deb12u2' ;; \
-         trixie) ca_min='20250419+deb13u1' ;; \
-         *) echo "Unsupported CA package baseline: $VERSION_CODENAME" >&2; exit 1 ;; \
-       esac \
-    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge "$ca_min" \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates openssl
 RUN python -m pip install --no-cache-dir --upgrade pip==26.2.2
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -26,14 +14,17 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 COPY requirements.txt /app/
-RUN pip install -r requirements.txt
+RUN pip install -r requirements.txt \
+    && pip uninstall -y setuptools wheel \
+    && pip check \
+    && python -c 'import pathlib, shutil, sysconfig; shutil.rmtree(pathlib.Path(sysconfig.get_path("stdlib")) / "ensurepip")'
 
 COPY verify_tls.py ./
 RUN python verify_tls.py
 
 COPY bot.py ./
 
-RUN groupadd -r botuser && useradd -r -g botuser -u 10001 botuser \
+RUN addgroup -S botuser && adduser -S -G botuser -u 10001 botuser \
     && mkdir -p /app/data \
     && chown -R botuser:botuser /app \
     && chmod 755 /app && chmod 644 /app/bot.py

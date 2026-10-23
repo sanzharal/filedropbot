@@ -11,7 +11,7 @@ on:
   schedule:
     - cron: '41 4 * * *'
 permissions:
-  contents: read
+  contents: write
   packages: write
 concurrency:
   group: filedropbot-publish
@@ -23,7 +23,7 @@ jobs:
     env:
       IMAGE: ghcr.io/sanzharal/filedropbot
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
         with:
@@ -36,6 +36,27 @@ jobs:
         run: |
           docker run --rm --network none --entrypoint python "$IMAGE:${{ github.sha }}" -c 'import telegram, httpx, dotenv; import py_compile; py_compile.compile("bot.py", cfile="/tmp/bot.pyc", doraise=True)'
           docker run --rm --network none --entrypoint python "$IMAGE:${{ github.sha }}" verify_tls.py
+      - name: Verify dependency and real dispatch contracts offline
+        run: |
+          docker run --rm --network none --entrypoint python "$IMAGE:${{ github.sha }}" -m pip check
+          docker run --rm --network none -e PYTHONPATH=/checks -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/checks:ro" -w /tmp --entrypoint python "$IMAGE:${{ github.sha }}" /checks/test_dependency_contract.py
+          docker run --rm --network none --user 0 -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/source:ro" --entrypoint sh "$IMAGE:${{ github.sha }}" -ec 'cp -a /source /tmp/checks; cd /tmp/checks; python .github/scripts/check_ptb_dispatch.py'
+      - name: Save full vulnerability inventory
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: '${{ env.IMAGE }}:${{ github.sha }}'
+          format: json
+          output: vulnerabilities.json
+          exit-code: '0'
+          ignore-unfixed: false
+          severity: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL'
+      - name: Block all high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: '${{ env.IMAGE }}:${{ github.sha }}'
+          exit-code: '1'
+          ignore-unfixed: false
+          severity: 'HIGH,CRITICAL'
       - name: Publish the tested image
         env:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -44,3 +65,12 @@ jobs:
           docker push "$IMAGE:${{ github.sha }}"
           docker tag "$IMAGE:${{ github.sha }}" "$IMAGE:latest"
           docker push "$IMAGE:latest"
+      - name: Save verified image for private server delivery
+        if: github.event_name != 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          archive="${{ runner.temp }}/filedropbot-${{ github.run_id }}.tar.gz"
+          docker save "$IMAGE:${{ github.sha }}" | gzip -1 > "$archive"
+          (cd "${{ runner.temp }}" && sha256sum "filedropbot-${{ github.run_id }}.tar.gz" > "filedropbot-${{ github.run_id }}.tar.gz.sha256")
+          gh release create "security-image-${{ github.run_id }}" --draft --target "${{ github.sha }}" --title "Verified bot image ${{ github.run_id }}" --notes "Tested bot runtime and vulnerability inventory. No credentials or runtime data included." "$archive" "$archive.sha256" vulnerabilities.json
