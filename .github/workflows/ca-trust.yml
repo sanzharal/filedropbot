@@ -35,7 +35,8 @@ jobs:
           import pathlib, subprocess, ssl, socket
           import certifi
           assert m.version("certifi") == "2026.10.19", m.version("certifi")
-          assert m.version("pip") == "26.2.2", m.version("pip")
+          import importlib.util
+          assert all(importlib.util.find_spec(name) is None for name in ["pip", "setuptools", "wheel", "ensurepip"])
           for bundle in [None, certifi.where()]:
               for chain in sorted(pathlib.Path("/chains").glob("*.pem")):
                   cmd = ["openssl", "verify", "-no-CApath", "-no-CAstore"]
@@ -54,7 +55,7 @@ jobs:
           PY
       - name: Verify dependency and Telegram dispatch contracts offline
         run: |
-          docker run --rm --network none --entrypoint python ca-trust:check -m pip check
+          docker run --rm --network none --entrypoint python ca-trust:check -c 'import telegram, httpx, dotenv, apscheduler'
           docker run --rm --network none -e PYTHONPATH=/checks -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/checks:ro" -w /tmp --entrypoint python ca-trust:check /checks/test_dependency_contract.py
       - name: Verify production PTB builder and actual dispatcher offline
         run: |

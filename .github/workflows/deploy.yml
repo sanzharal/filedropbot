@@ -38,7 +38,7 @@ jobs:
           docker run --rm --network none --entrypoint python "$IMAGE:${{ github.sha }}" verify_tls.py
       - name: Verify dependency and real dispatch contracts offline
         run: |
-          docker run --rm --network none --entrypoint python "$IMAGE:${{ github.sha }}" -m pip check
+          docker run --rm --network none --entrypoint python "$IMAGE:${{ github.sha }}" -c 'import importlib.util; assert all(importlib.util.find_spec(name) is None for name in ["pip", "setuptools", "wheel", "ensurepip"])'
           docker run --rm --network none -e PYTHONPATH=/checks -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/checks:ro" -w /tmp --entrypoint python "$IMAGE:${{ github.sha }}" /checks/test_dependency_contract.py
           docker run --rm --network none --user 0 -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/source:ro" --entrypoint sh "$IMAGE:${{ github.sha }}" -ec 'cp -a /source /tmp/checks; cd /tmp/checks; python .github/scripts/check_ptb_dispatch.py'
       - name: Save full vulnerability inventory
