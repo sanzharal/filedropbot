@@ -17,6 +17,7 @@ COPY requirements.txt /app/
 RUN pip install -r requirements.txt \
     && pip uninstall -y setuptools wheel \
     && pip check \
+    && pip uninstall -y pip \
     && python -c 'import pathlib, shutil, sysconfig; shutil.rmtree(pathlib.Path(sysconfig.get_path("stdlib")) / "ensurepip")'
 
 COPY verify_tls.py ./
