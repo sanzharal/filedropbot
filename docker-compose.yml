@@ -3,6 +3,8 @@ services:
     build: .
     container_name: filedropbot
     restart: unless-stopped
+    sysctls:
+      net.mptcp.enabled: "0"
     user: "${FILEDROP_UID:-1000}:${FILEDROP_GID:-1001}"
     logging:
       driver: journald
