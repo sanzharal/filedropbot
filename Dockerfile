@@ -2,7 +2,7 @@ FROM python:3.11-alpine3.24
 
 # Reject eMudhra compromised CA chains in both build tools and the runtime.
 RUN apk upgrade --no-cache \
-    && apk add --no-cache ca-certificates openssl
+    && apk add --no-cache ca-certificates openssl 'krb5-libs>=1.22.3-r0'
 RUN python -m pip install --no-cache-dir --upgrade pip==26.2.2
 
 ENV PYTHONUNBUFFERED=1 \
