@@ -1,4 +1,4 @@
-FROM python:3.11-alpine3.24
+FROM python:3.15-alpine3.24
 
 # Reject eMudhra compromised CA chains in both build tools and the runtime.
 RUN apk upgrade --no-cache \
